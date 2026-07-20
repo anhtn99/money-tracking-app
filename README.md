@@ -1,4 +1,4 @@
-# Copilot Clone
+# Money Tracking App
 
 A personal-finance app modeled on Copilot Money, built as a learning
 project. FastAPI + Postgres, containerized, eventually deployed to
@@ -57,8 +57,8 @@ Then check:
 ## Roadmap
 
 1. ~~Infrastructure + data model~~ (Phase 1)
-2. ~~Accounts tab~~ (Phase 2 -- this update)
-3. **Transactions tab** -- Plaid sync, manual CRUD, the three types
+2. ~~Accounts tab~~ (Phase 2)
+3. ~~Transactions tab~~ (Phase 3 -- this update)
 4. **Categories tab** -- budgets, grouping
 5. **Recurrings tab** -- manual rules, then auto-detection
 

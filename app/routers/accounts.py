@@ -107,7 +107,7 @@ def create_link_token():
     client = get_plaid_client()
     request = LinkTokenCreateRequest(
         products=[Products("transactions")],
-        client_name="Copilot Clone",
+        client_name="Money Tracking App",
         country_codes=[CountryCode("US")],
         language="en",
         user=LinkTokenCreateRequestUser(client_user_id=PLAID_CLIENT_USER_ID),
@@ -174,7 +174,7 @@ def create_reverify_link_token(account_id: uuid.UUID, db: Session = Depends(get_
 
     client = get_plaid_client()
     request = LinkTokenCreateRequest(
-        client_name="Copilot Clone",
+        client_name="Money Tracking App",
         country_codes=[CountryCode("US")],
         language="en",
         user=LinkTokenCreateRequestUser(client_user_id=PLAID_CLIENT_USER_ID),

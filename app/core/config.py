@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/copilot_clone"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/money_tracking_app"
     environment: str = "local"
 
     class Config:

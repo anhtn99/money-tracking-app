@@ -13,7 +13,7 @@ import boto3
 def store_plaid_access_token(item_id: str, access_token: str) -> str:
     """Creates a new secret, returns its name (what we store in our DB)."""
     client = boto3.client("secretsmanager")
-    secret_name = f"copilot-clone/plaid-access-token/{item_id}"
+    secret_name = f"money-tracking-app/plaid-access-token/{item_id}"
     client.create_secret(
         Name=secret_name,
         SecretString=json.dumps({"access_token": access_token}),

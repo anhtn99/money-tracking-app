@@ -1,6 +1,5 @@
 """
-FastAPI entrypoint. Just a health check for now -- Phase 2 adds the
-Accounts router, Phase 3 Transactions, etc.
+FastAPI entrypoint.
 """
 from fastapi import FastAPI, Depends
 from sqlalchemy import text
@@ -9,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.routers import accounts
 
-app = FastAPI(title="Copilot Clone API")
+app = FastAPI(title="Money Tracking App API")
 app.include_router(accounts.router)
 
 
