@@ -47,5 +47,13 @@ class Account(Base):
     plaid_account_id = Column(String, nullable=True, unique=True)
     plaid_access_token_ref = Column(String, nullable=True)  # secrets manager ARN, not the token itself
 
+    # transactions/sync cursor (see app/services/transaction_sync.py). A
+    # single Plaid Item (access token) can back multiple Account rows
+    # (e.g. checking + savings at the same bank) -- transactions_sync is
+    # called once per item and the resulting cursor is written to every
+    # Account row sharing that plaid_item_id, mirroring how
+    # plaid_access_token_ref is already duplicated across those rows.
+    plaid_sync_cursor = Column(String, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

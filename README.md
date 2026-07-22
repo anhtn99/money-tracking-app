@@ -90,6 +90,64 @@ completing Plaid Link requires their JS widget running in a browser
 yet) -- `/accounts/plaid/exchange` is correct and ready, but you can't
 get a real `public_token` to test it with until we build a frontend.
 
+### Phase 3: Transactions tab
+
+Endpoints added:
+- `POST /transactions/manual`, `GET /transactions`, `GET /transactions/{id}`,
+  `PATCH /transactions/{id}`, `DELETE /transactions/{id}` -- manual
+  transaction CRUD, works against any account (manual or Plaid-linked).
+  `GET /transactions` supports `account_id` / `transaction_type` /
+  `start_date` / `end_date` filters.
+- `POST /transactions/sync` -- pulls new transactions from every active,
+  Plaid-linked account (`app/services/transaction_sync.py`), same
+  cursor-based `transactions/sync` approach as the existing
+  `plaid-sheets-sync` Lambda, adapted to write into Postgres. Runs
+  on-demand for now; a schedule is a Phase 6 (AWS deployment) concern.
+
+A few implementation notes worth knowing about:
+- **Type classification** happens once, at creation -- Plaid's
+  `personal_finance_category.primary` maps `INCOME` to `income` and
+  `TRANSFER_IN`/`TRANSFER_OUT`/`LOAN_PAYMENTS` to `transfer`, everything
+  else to `regular`. A later "modified" sync event refreshes
+  Plaid-sourced fields (name/amount/date/pending) but never re-classifies
+  the type or touches `category_id`/`notes`/`is_recurring` -- so a manual
+  override (e.g. "Mark as internal transfer") or manually-set category
+  survives future syncs.
+- **Categories aren't assigned by sync** -- the Categories tab (Phase 4)
+  doesn't exist yet, so synced transactions land with `category_id = null`
+  until that's built.
+- **The green-amount and `[R]`/`[T]`/`[I]` indicator** are computed
+  per-request in `app/services/transaction_presentation.py`, not stored
+  columns -- see the design note in `app/models/transaction.py`. The
+  indicator is treated as mutually exclusive (recurring beats
+  transfer/income beats regular), matching how the spec's reference
+  images show it.
+- **Sync cursor** lives on `Account.plaid_sync_cursor`. Since one Plaid
+  Item (access token) can back multiple accounts, the cursor is written
+  to every `Account` row sharing a `plaid_item_id` after a successful
+  sync -- same duplication pattern already used for
+  `plaid_access_token_ref`.
+- A broken connection (e.g. `ITEM_LOGIN_REQUIRED`) flips just that
+  account's `status` to `needs_reverification` and moves on to the next
+  Item, rather than failing the whole sync run.
+
+**What's fully testable right now**: everything -- manual CRUD via
+`/docs`, and sync via `pytest` (mocks the Plaid client, see
+`tests/test_transactions.py`) or by actually linking a sandbox account
+via `/accounts/plaid/exchange` first.
+
+## Running tests
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests run against an in-memory SQLite database (see `tests/conftest.py`
+and the sqlite fallback in `app/database.py`) -- no Docker or Postgres
+required. Plaid sync tests mock the Plaid client entirely, so no network
+access or real credentials are needed either.
 
 ## Deploying to AWS (later phase, not yet done)
 
