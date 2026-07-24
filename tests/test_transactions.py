@@ -316,6 +316,30 @@ def test_sync_classifies_and_creates_transactions(client, monkeypatch, patch_sec
     db.close()
 
 
+def test_sync_classifies_zelle_as_regular_despite_transfer_category(client, monkeypatch, patch_secrets):
+    _create_linked_account("item-zelle", "plaid-acc-zelle", AccountType.depository, "secret-ref-zelle")
+
+    page = {
+        "added": [
+            _txn("t-zelle-rent", "plaid-acc-zelle", "Zelle payment to GOLD PROPERTIES LLC", 1750.00, category="TRANSFER_OUT"),
+        ],
+        "modified": [],
+        "removed": [],
+        "has_more": False,
+        "next_cursor": "cursor-zelle",
+    }
+    fake_client = FakePlaidClient({None: [page]})
+    monkeypatch.setattr(transaction_sync, "get_plaid_client", lambda: fake_client)
+
+    response = client.post("/transactions/sync")
+    assert response.status_code == 200
+
+    db = SessionLocal()
+    txn = db.query(Transaction).filter_by(plaid_transaction_id="t-zelle-rent").one()
+    assert txn.transaction_type == TransactionType.regular
+    db.close()
+
+
 def test_sync_is_idempotent_on_dedup_and_applies_modified_and_removed(client, monkeypatch, patch_secrets):
     account = _create_linked_account("item-2", "plaid-acc-2", AccountType.depository, "secret-ref-2")
 

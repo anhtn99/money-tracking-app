@@ -35,6 +35,16 @@ INCOME_PRIMARY_CATEGORIES = {"INCOME"}
 
 
 def _classify_type(txn) -> TransactionType:
+    # Zelle gets the same TRANSFER_IN/OUT category from Plaid as actual
+    # internal transfers (moving money between our own accounts), but
+    # Zelle here is only ever used to pay someone back or buy something
+    # secondhand -- a real expense/income event, never an internal
+    # transfer. Checked before the category lookup so it wins regardless
+    # of how Plaid classified the transaction.
+    name = (txn.get("merchant_name") or txn.get("name") or "")
+    if "zelle" in name.lower():
+        return TransactionType.regular
+
     pfc = txn.get("personal_finance_category")
     primary = pfc["primary"] if pfc else None
     if primary in TRANSFER_PRIMARY_CATEGORIES:
