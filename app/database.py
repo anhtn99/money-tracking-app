@@ -4,7 +4,7 @@ that depends on how/where the data is actually stored. Models import Base
 from here; routers will import get_db as a FastAPI dependency (added in
 Phase 2, once we start building real endpoints).
 """
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import StaticPool
 
@@ -21,6 +21,19 @@ if settings.database_url.startswith("sqlite"):
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    # Unlike Postgres, SQLite doesn't enforce FOREIGN KEY constraints
+    # unless told to per-connection -- without this, any test relying on
+    # FK enforcement (e.g. a bad reference correctly raising
+    # IntegrityError) would silently pass against SQLite while only
+    # actually being enforced against the real Postgres database, a
+    # false-negative test gap. Not tied to one specific route's behavior
+    # -- worth remembering whenever a test passes suspiciously easily.
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 else:
     engine = create_engine(settings.database_url)
 

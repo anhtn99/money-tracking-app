@@ -23,6 +23,7 @@ from app.core.secrets import get_plaid_access_token
 from app.models.account import Account, AccountStatus
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.transaction import SyncResult
+from app.services.default_category import get_default_category
 
 # Plaid's personal_finance_category.primary values that represent money
 # moving between the household's own accounts rather than a real
@@ -69,6 +70,11 @@ def sync_all_accounts(db: Session) -> SyncResult:
     multiple accounts, e.g. checking + savings at the same bank) -- see
     the design note on Account.plaid_sync_cursor."""
     client = get_plaid_client()
+    # Every transaction always has a category (Transaction.category_id is
+    # NOT NULL) -- Plaid's own category isn't mapped to ours (Categories
+    # is user-managed, see app/services/category_overview.py), so newly
+    # synced transactions fall back to "Other" like any other uncategorized one.
+    default_category_id = get_default_category(db).id
 
     linked_accounts = (
         db.query(Account)
@@ -128,6 +134,7 @@ def sync_all_accounts(db: Session) -> SyncResult:
                 amount=txn["amount"],
                 transaction_date=txn["date"],
                 transaction_type=_classify_type(txn),
+                category_id=default_category_id,
                 is_manual=False,
                 is_pending=txn["pending"],
                 plaid_transaction_id=txn["transaction_id"],

@@ -4,7 +4,7 @@ seen in Copilot's Categories tab (Essential, Neutral, Transportation,
 etc.) -- Category rows nest under a group.
 """
 import uuid
-from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey
+from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -30,6 +30,14 @@ class Category(Base):
     color = Column(String, nullable=False)  # hex string, e.g. "#4CAF50"
     icon = Column(String, nullable=False)  # emoji or icon identifier
     budget = Column(Numeric(12, 2), nullable=True)  # optional, per spec
+
+    # Exactly one row has this set True -- the seeded "Other" category
+    # (see the migration that adds this column). Every transaction always
+    # has a category (Transaction.category_id is NOT NULL); "Other" is
+    # the fallback for anything not explicitly categorized, and the
+    # reassignment target when a category is deleted. Protected from
+    # deletion in the router -- see app/routers/categories.py.
+    is_default = Column(Boolean, nullable=False, default=False)
 
     group_id = Column(UUID(as_uuid=True), ForeignKey("category_groups.id"), nullable=True)
     group = relationship("CategoryGroup", back_populates="categories")

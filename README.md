@@ -58,8 +58,8 @@ Then check:
 
 1. ~~Infrastructure + data model~~ (Phase 1)
 2. ~~Accounts tab~~ (Phase 2)
-3. ~~Transactions tab~~ (Phase 3 -- this update)
-4. **Categories tab** -- budgets, grouping
+3. ~~Transactions tab~~ (Phase 3)
+4. ~~Categories tab~~ (Phase 4 -- this update)
 5. **Recurrings tab** -- manual rules, then auto-detection
 
 ### Phase 2: Accounts tab
@@ -135,6 +135,124 @@ A few implementation notes worth knowing about:
 `/docs`, and sync via `pytest` (mocks the Plaid client, see
 `tests/test_transactions.py`) or by actually linking a sandbox account
 via `/accounts/plaid/exchange` first.
+
+### Phase 4: Categories tab
+
+`Category`/`CategoryGroup` were already modeled in Phase 1 -- this phase
+is all endpoints, no new migration.
+
+Endpoints added:
+- `POST /categories/groups`, `GET /categories/groups`,
+  `GET /categories/groups/{id}`, `PATCH /categories/groups/{id}`,
+  `DELETE /categories/groups/{id}` -- CategoryGroup CRUD
+- `POST /categories`, `GET /categories` (filterable by `group_id`),
+  `GET /categories/{id}`, `PATCH /categories/{id}`,
+  `DELETE /categories/{id}` -- Category CRUD
+- `GET /categories/overview?year=&month=` -- budget-vs-spend rollup per
+  category and per group for a given month (defaults to the current
+  month), matching `categories-tab.png`. Computed fresh from that month's
+  transactions on every request (`app/services/category_overview.py`),
+  not a stored/cached value.
+- `GET /transactions/cashflow?year=&month=` -- total income minus total
+  spend across *every* transaction that month, regardless of category or
+  budget status (`app/services/cash_flow.py`). Lives on the transactions
+  router rather than categories, since it isn't category-scoped at all.
+
+**The budget model, after a design pass following user feedback** (the
+first draft above was simpler and got revised before being used anywhere):
+- A category's **effective budget** = its manual `budget` **+** the sum
+  of that category's own `is_recurring` transactions actually dated in
+  that month. Reasoning: a category can have both a monthly recurring
+  cost and a yearly one (e.g. Netflix monthly + Amazon Prime yearly under
+  "Subscriptions") -- a flat monthly budget would make the one month the
+  yearly charge lands in look "over budget" even though it's expected.
+  This is reactive (based on transactions that already happened), not a
+  projection from Recurring Rules -- `RecurringRule` (Phase 5) has no
+  `category_id` or anchor date to project "which month is this due in"
+  from yet, so building that projection now would mean front-loading
+  Phase 5 work into Phase 4.
+- **A category with no budget set is excluded from the grand total's
+  `total_spent`/`total_budget`** -- even though its spend is real. It's
+  still *listed* (matching the reference screenshot's "Credit Card Fee"
+  row) with `budget: null`. That real spend isn't lost, though -- the
+  top-level response also carries `all_categories_spent`, which sums
+  every category regardless of budget status (distinct from
+  `/transactions/cashflow`, which is scoped even wider -- literally every
+  transaction, categorized or not, not just categorized-but-unbudgeted).
+- **`CategoryGroup` deliberately has no budget of its own** -- Copilot's
+  real app lets a group carry an independent "umbrella" budget that can
+  cover unbudgeted categories underneath it, but mixing budgeted and
+  unbudgeted categories under one number was judged more confusing than
+  it's worth here.
+- **A group only gets a `budget`/`status` when EVERY one of its
+  categories has a budget set** -- a *partial* group budget (some
+  categories opted in, some didn't) would compare the group's full spend
+  against an incomplete denominator, making the group look "over budget"
+  for reasons that have nothing to do with real overspending. If the
+  group isn't fully budgeted, `budget`/`status` are `null` and `spent` is
+  just the plain sum of every category in it (so the money's still
+  visible, just without a misleading comparison). Note this makes
+  `CategoryGroupSpend.spent` unconditional (always every category) unlike
+  the top-level `total_spent`, which stays scoped to individually-
+  budgeted categories regardless of their group's status -- a category's
+  own budget still counts toward the grand total even if a sibling in the
+  same group drags that group's own number down to `null`.
+- **Budget status** (`under`/`near`/`over`) uses a judgment-call 90%
+  threshold for "near" (`NEAR_BUDGET_RATIO` in `category_overview.py`) --
+  the reference screenshot's exact color cutoffs aren't fully pinned down
+  pixel-by-pixel, so this is a clearly documented choice, not a precise
+  reverse-engineering of Copilot's own thresholds. Spending *exactly*
+  equal to budget is treated as `under`, not `near` -- confirmed against
+  the screenshot, where categories at exactly 100% of budget (Mortgage/
+  Rent, Gym) still render fully green, not a warning color.
+- **Deleting a group vs. deleting a category behave differently on
+  purpose**: deleting a `CategoryGroup` un-groups its categories
+  (`group_id -> null`), a low-stakes, reversible change. Deleting a
+  `Category` **reassigns** its transactions to the default "Other"
+  category instead (see below) rather than blocking or orphaning them --
+  every transaction always has a category, so a deleted category can't
+  just leave a dangling reference.
+- **Found and fixed a real gap while testing this**: SQLite (used by the
+  test suite) doesn't enforce `FOREIGN KEY` constraints by default the
+  way Postgres does -- without `PRAGMA foreign_keys=ON` (now wired into
+  `app/database.py`'s sqlite branch), FK-dependent behavior can silently
+  pass in SQLite while only actually being enforced against the real
+  Postgres database. Worth remembering any time a test passes
+  suspiciously easily.
+
+### Every transaction always has a category ("Other")
+
+Added after Phase 4 initially shipped, once real usage surfaced the need:
+`Transaction.category_id` is now `NOT NULL` at the DB level, and exactly
+one `Category` row has `is_default=True` -- seeded by migration
+`8d3bb1fb63ef` (a genuine *data* migration, not just schema: it also
+backfills any pre-existing transaction with a null `category_id`, in the
+correct order relative to the `NOT NULL` constraint being added).
+`app/services/default_category.py` is the one place that looks this row
+up (`Category.is_default.is_(True)`).
+
+- **Manual creation** (`POST /transactions/manual`) falls back to
+  "Other" when `category_id` is omitted; explicitly providing an unknown
+  id 404s.
+- **`PATCH`** treats an explicit `category_id: null` as "reset to
+  Other," not "clear it" -- the column can never actually be null.
+- **Plaid sync** (`transaction_sync.py`) assigns every newly-synced
+  transaction to "Other" too -- Plaid's own category isn't mapped to
+  ours (Categories is entirely user-managed), so there's nothing more
+  specific to assign yet.
+- **Deleting a category** reassigns every transaction pointing at it to
+  "Other" first, then deletes it. "Other" itself can never be deleted
+  (`is_default=True` is checked before any delete) -- it has to always
+  exist, since it's the reassignment target.
+- **`GET /transactions?category_id=...`** -- new filter, useful on its
+  own and specifically for a future category-detail view (matching
+  `category-overview.png`'s "TRANSACTIONS" list) -- composes with the
+  existing `start_date`/`end_date` filters for "transactions in category
+  X during month Y."
+- Local test fixtures (`tests/conftest.py`) seed this same "Other" row
+  by hand after `Base.metadata.create_all()`, since that path builds the
+  schema straight from the models and never runs the Alembic migration
+  that seeds it for real environments.
 
 ## Running tests
 

@@ -88,3 +88,11 @@ class SyncResult(BaseModel):
     modified: int
     removed: int
     needs_reverification: list[uuid.UUID]
+
+
+class CashFlowResponse(BaseModel):
+    year: int
+    month: int
+    total_income: Decimal
+    total_spend: Decimal
+    net_cash_flow: Decimal

@@ -5,6 +5,7 @@ import pytest
 
 from app.database import SessionLocal
 from app.models.account import Account, AccountType, AccountStatus
+from app.models.category import Category
 from app.models.transaction import Transaction, TransactionType
 from app.services import transaction_sync
 
@@ -58,10 +59,46 @@ def test_create_and_get_manual_transaction(client):
     assert body["name"] == "Coffee"
     assert body["is_manual"] is True
     assert body["transaction_type"] == "regular"
+    # No category_id given -- defaults to "Other" rather than staying null
+    other = next(c for c in client.get("/categories").json() if c["is_default"])
+    assert body["category_id"] == other["id"]
 
     get_response = client.get(f"/transactions/{body['id']}")
     assert get_response.status_code == 200
     assert get_response.json()["name"] == "Coffee"
+
+
+def test_clearing_category_resets_to_other(client):
+    account_id = _create_account(client)
+    category = client.post("/categories", json={"name": "Groceries", "color": "#4CAF50", "icon": "🥑"}).json()
+    created = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Coffee", "amount": "4.50",
+        "transaction_date": "2026-07-15", "category_id": category["id"],
+    }).json()
+    assert created["category_id"] == category["id"]
+
+    response = client.patch(f"/transactions/{created['id']}", json={"category_id": None})
+    assert response.status_code == 200
+    other = next(c for c in client.get("/categories").json() if c["is_default"])
+    assert response.json()["category_id"] == other["id"]
+
+
+def test_list_transactions_filters_by_category(client):
+    account_id = _create_account(client)
+    category = client.post("/categories", json={"name": "Groceries", "color": "#4CAF50", "icon": "🥑"}).json()
+    in_category = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Groceries run", "amount": "50.00",
+        "transaction_date": "2026-07-15", "category_id": category["id"],
+    }).json()
+    client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Other txn", "amount": "10.00", "transaction_date": "2026-07-15",
+    })
+
+    response = client.get("/transactions", params={"category_id": category["id"]})
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 1
+    assert results[0]["id"] == in_category["id"]
 
 
 def test_create_manual_transaction_unknown_account_404s(client):
@@ -124,12 +161,14 @@ def test_synced_transaction_account_is_immutable(client):
     account_b = _create_account(client, name="Some Other Account")
 
     db = SessionLocal()
+    other_category = db.query(Category).filter_by(is_default=True).one()
     txn = Transaction(
         account_id=account_a.id,
         name="Synced txn",
         amount=10,
         transaction_date=datetime.date(2026, 7, 15),
         transaction_type=TransactionType.regular,
+        category_id=other_category.id,
         is_manual=False,
         plaid_transaction_id="plaid-txn-1",
     )
@@ -271,6 +310,8 @@ def test_sync_classifies_and_creates_transactions(client, monkeypatch, patch_sec
     assert by_plaid_id["t-transfer"].transaction_type == TransactionType.transfer
     assert by_plaid_id["t-regular"].transaction_type == TransactionType.regular
     assert by_plaid_id["t-regular"].is_pending is True
+    other_category = db.query(Category).filter_by(is_default=True).one()
+    assert by_plaid_id["t-regular"].category_id == other_category.id
     assert db.get(Account, account.id).plaid_sync_cursor == "cursor-1"
     db.close()
 
@@ -352,3 +393,39 @@ def test_sync_marks_account_needs_reverification_on_plaid_error(client, monkeypa
     db = SessionLocal()
     assert db.get(Account, account.id).status == AccountStatus.needs_reverification
     db.close()
+
+
+# ── Cash flow ──────────────────────────────────────────────────────────────
+
+def test_cash_flow_computes_income_minus_spend_excluding_transfers(client):
+    account_id = _create_account(client)
+
+    def make(name, amount, transaction_type, date_="2026-07-15"):
+        client.post("/transactions/manual", json={
+            "account_id": account_id, "name": name, "amount": amount,
+            "transaction_date": date_, "transaction_type": transaction_type,
+        })
+
+    make("Paycheck", "-2000.00", "income")
+    make("Groceries", "150.00", "regular")
+    make("Refund", "-20.00", "regular")  # reduces net spend, same as a real credit
+    make("Credit card autopay", "500.00", "transfer")  # must be excluded entirely
+    # Out-of-month -- must be excluded
+    make("June rent", "1750.00", "regular", date_="2026-06-01")
+
+    response = client.get("/transactions/cashflow", params={"year": 2026, "month": 7})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["total_income"] == "2000.00"
+    assert body["total_spend"] == "130.00"  # 150 - 20, June's 1750 excluded
+    assert body["net_cash_flow"] == "1870.00"  # 2000 - 130
+
+
+def test_cash_flow_defaults_to_current_month(client):
+    response = client.get("/transactions/cashflow")
+    assert response.status_code == 200
+    body = response.json()
+    today = datetime.date.today()
+    assert body["year"] == today.year
+    assert body["month"] == today.month

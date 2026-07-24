@@ -16,14 +16,23 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction, TransactionType
-from app.schemas.transaction import ManualTransactionCreate, TransactionUpdate, TransactionResponse, SyncResult
+from app.schemas.transaction import (
+    ManualTransactionCreate,
+    TransactionUpdate,
+    TransactionResponse,
+    SyncResult,
+    CashFlowResponse,
+)
 from app.services.transaction_sync import sync_all_accounts
+from app.services.cash_flow import get_cash_flow
+from app.services.default_category import get_default_category
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -42,16 +51,31 @@ def _get_account_or_404(account_id: uuid.UUID, db: Session) -> Account:
     return account
 
 
+def _get_category_or_404(category_id: uuid.UUID, db: Session) -> Category:
+    category = db.get(Category, category_id)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return category
+
+
 @router.post("/manual", response_model=TransactionResponse, status_code=201)
 def create_manual_transaction(payload: ManualTransactionCreate, db: Session = Depends(get_db)):
     _get_account_or_404(payload.account_id, db)
+    # Every transaction always has a category -- fall back to "Other"
+    # when the caller doesn't specify one (see app/services/default_category.py).
+    if payload.category_id is not None:
+        _get_category_or_404(payload.category_id, db)
+        category_id = payload.category_id
+    else:
+        category_id = get_default_category(db).id
+
     transaction = Transaction(
         account_id=payload.account_id,
         name=payload.name,
         amount=payload.amount,
         transaction_date=payload.transaction_date,
         transaction_type=payload.transaction_type,
-        category_id=payload.category_id,
+        category_id=category_id,
         is_recurring=payload.is_recurring,
         recurring_rule_id=payload.recurring_rule_id,
         notes=payload.notes,
@@ -66,6 +90,7 @@ def create_manual_transaction(payload: ManualTransactionCreate, db: Session = De
 @router.get("", response_model=list[TransactionResponse])
 def list_transactions(
     account_id: Optional[uuid.UUID] = None,
+    category_id: Optional[uuid.UUID] = None,
     transaction_type: Optional[TransactionType] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -74,6 +99,8 @@ def list_transactions(
     query = db.query(Transaction)
     if account_id is not None:
         query = query.filter(Transaction.account_id == account_id)
+    if category_id is not None:
+        query = query.filter(Transaction.category_id == category_id)
     if transaction_type is not None:
         query = query.filter(Transaction.transaction_type == transaction_type)
     if start_date is not None:
@@ -82,6 +109,27 @@ def list_transactions(
         query = query.filter(Transaction.transaction_date <= end_date)
     transactions = query.order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc()).all()
     return [TransactionResponse.from_transaction(t) for t in transactions]
+
+
+@router.get("/cashflow", response_model=CashFlowResponse)
+def get_transactions_cashflow(
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    db: Session = Depends(get_db),
+):
+    """Registered before /{transaction_id} deliberately -- both are
+    single path segments, same routing-order gotcha covered for the
+    Accounts and Categories routers.
+
+    `year if year is not None else ...`, not `year or ...` -- the latter
+    would treat an explicit month=0 as "not given" (0 is falsy) and
+    silently substitute today's month instead of rejecting it."""
+    today = date.today()
+    return get_cash_flow(
+        db,
+        year if year is not None else today.year,
+        month if month is not None else today.month,
+    )
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)
@@ -102,6 +150,14 @@ def update_transaction(transaction_id: uuid.UUID, payload: TransactionUpdate, db
                 detail="Cannot change the account on a synced transaction",
             )
         _get_account_or_404(updates["account_id"], db)
+
+    if "category_id" in updates:
+        if updates["category_id"] is None:
+            # Explicitly clearing the category resets to "Other" rather
+            # than leaving it null -- every transaction always has one.
+            updates["category_id"] = get_default_category(db).id
+        else:
+            _get_category_or_404(updates["category_id"], db)
 
     for field, value in updates.items():
         setattr(transaction, field, value)

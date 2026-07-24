@@ -38,7 +38,11 @@ class Transaction(Base):
     transaction_date = Column(Date, nullable=False)
     transaction_type = Column(Enum(TransactionType), nullable=False, default=TransactionType.regular)
 
-    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+    # Every transaction always has a category -- defaults to the seeded
+    # "Other" category when not explicitly set (see
+    # app/services/default_category.py), never left null. Enforced at the
+    # DB level, not just in application code.
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
     category = relationship("Category")
 
     recurring_rule_id = Column(UUID(as_uuid=True), ForeignKey("recurring_rules.id"), nullable=True)
