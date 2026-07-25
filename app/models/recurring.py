@@ -5,11 +5,16 @@ Design note on the "expected date range": rather than a fixed calendar
 date (which doesn't generalize across weekly/monthly/yearly frequencies),
 this stores a day-within-the-period (e.g. "day 1" for a monthly rent rule)
 plus a tolerance window in days -- reused the same way regardless of
-frequency.
+frequency. NOTE: the matching engine (app/services/recurring_matching.py)
+deliberately does NOT use these two fields yet -- they can't cleanly
+generalize across every frequency as stored today (no month for `yearly`,
+ambiguous for `weekly`), so v1 matching is name pattern + amount range
+only. Kept on the model for the future "predicted next due date"/overdue-
+bill feature, not dead columns.
 """
 import enum
 import uuid
-from sqlalchemy import Column, String, Integer, Numeric, DateTime, Enum
+from sqlalchemy import Column, String, Integer, Numeric, Boolean, DateTime, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -48,6 +53,11 @@ class RecurringRule(Base):
 
     expected_day_of_period = Column(Integer, nullable=False)  # e.g. 1 for "around the 1st"
     expected_date_tolerance_days = Column(Integer, nullable=False, default=3)
+
+    # Whether matches count toward the Shared Expenses split (Phase 6) --
+    # e.g. rent/insurance/internet, regardless of how the linked
+    # transactions themselves got classified (transfer, regular, etc).
+    is_shared = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

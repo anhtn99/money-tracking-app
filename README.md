@@ -59,8 +59,10 @@ Then check:
 1. ~~Infrastructure + data model~~ (Phase 1)
 2. ~~Accounts tab~~ (Phase 2)
 3. ~~Transactions tab~~ (Phase 3)
-4. ~~Categories tab~~ (Phase 4 -- this update)
-5. **Recurrings tab** -- manual rules, then auto-detection
+4. ~~Categories tab~~ (Phase 4)
+5. ~~Recurrings tab~~ (Phase 5 -- this update)
+6. **Shared Expenses tab** -- built entirely on top of Phase 5, no
+   changes to Phases 1-5's own code (see the design note below)
 
 ### Phase 2: Accounts tab
 
@@ -219,6 +221,114 @@ first draft above was simpler and got revised before being used anywhere):
   pass in SQLite while only actually being enforced against the real
   Postgres database. Worth remembering any time a test passes
   suspiciously easily.
+
+### Phase 5: Recurrings tab
+
+`RecurringRule` was already modeled in Phase 1 but had no router and
+nothing ever set `Transaction.recurring_rule_id`/`is_recurring` -- this
+phase is the actual matching engine plus CRUD, and it's also where the
+`Transaction.name`/`display_name` split was introduced.
+
+Endpoints added:
+- `POST /recurring`, `GET /recurring`, `GET /recurring/{id}`,
+  `PATCH /recurring/{id}`, `DELETE /recurring/{id}` -- RecurringRule CRUD.
+- `GET /transactions?search=` -- new filter, matches against
+  `display_name` OR the original `name` OR the linked category's name
+  (see the display_name design note below for why all three).
+
+**`Transaction.name` vs `Transaction.display_name`:** `name` is the
+original text synced from Plaid (or typed for a manual entry) and is
+never touched by matching. `display_name` is what every list/search view
+should render -- it defaults to `name`, but gets overwritten to the
+linked `RecurringRule.name` once matched (`app/services/recurring_matching.py`),
+e.g. a transaction named "Zelle payment to GOLD PROPERTIES LLC" displays
+as "Chicago Rent". `GET /transactions/{id}` (a single-transaction detail
+view) is the one place that still shows the original `name`. This is why
+search checks all three fields: searching "zelle" still finds the
+relabeled rent transaction (its `name` still has it), and searching
+"rent" finds transactions filed under a Rent/Mortgage category even when
+neither name field says "rent".
+
+**Matching is name-pattern + amount-range only (v1 scope) --
+`expected_day_of_period`/`expected_date_tolerance_days` are NOT used by
+the matcher.** Those two fields can't cleanly generalize across every
+`RecurringFrequency` as currently stored (no month for `yearly`,
+ambiguous for `weekly`) -- they're kept on the model for a future
+"predicted next due date"/overdue-bill feature, not dead columns. If a
+transaction could match more than one rule, the earliest-created rule
+wins; there's no explicit priority field yet.
+
+Where matching runs (`app/services/recurring_matching.py`):
+- **Manual creation** (`POST /transactions/manual`) -- auto-matches
+  against existing rules unless an explicit `recurring_rule_id` is given.
+- **Plaid sync** -- every newly `added` transaction is matched at
+  creation; a `modified` transaction gets a second matching attempt (only
+  if still unlinked) since Plaid sometimes cleans up merchant text
+  between the pending and posted versions of the same transaction.
+- **Creating a rule** always retroactively matches existing unmatched
+  transactions -- setting up "Chicago Rent" today also relabels past
+  occurrences, not just future ones. No opt-out on create, matching
+  Copilot's own creation flow; an unwanted individual match can still be
+  unlinked afterward via `PATCH /transactions/{id}` with
+  `recurring_rule_id: null`.
+- **Renaming a rule** (`PATCH /recurring/{id}` with a new `name`)
+  propagates to every transaction already linked to it regardless of
+  `apply_to_existing` below (renaming just keeps an existing label in
+  sync, it isn't "matching more transactions"), and re-attempts
+  retroactive matching if a matching-relevant field changed too (the new
+  pattern/amount range might now catch transactions that didn't match
+  before).
+- **`apply_to_existing`** (`PATCH /recurring/{id}` only, default `true`)
+  -- mirrors Copilot's own "Recurring Filter Changes" modal ("Only for
+  future payments" vs "Also recalculate previous payments"), which only
+  ever appears on the edit flow, not creation. `false` skips the
+  retroactive scan: only transactions created/synced *after* the update
+  will auto-match under the new criteria; anything already unmatched
+  stays that way unless linked manually. Not a stored column -- it's a
+  one-time request directive, stripped out before updating the
+  `RecurringRule` row. The retroactive scan (and hence this flag) is
+  skipped entirely unless the request actually touches a matching-
+  relevant field (`name_pattern`, `amount_min`, `amount_max`,
+  `name_match_type`) -- there's nothing to recalculate from e.g. toggling
+  `is_shared` alone.
+- **`PATCH /transactions/{id}`** accepts `recurring_rule_id` directly too
+  -- setting it 404s on an unknown rule then links + sets the alias;
+  explicitly clearing it (`null`) unlinks and resets `display_name` back
+  to the original `name`.
+- **Deleting a rule** unlinks its transactions (`recurring_rule_id` ->
+  `null`, `is_recurring` -> `false`, `display_name` reset to `name`)
+  rather than blocking or leaving a dangling reference -- same reasoning
+  as Category's delete-reassigns-to-Other and CategoryGroup's
+  delete-ungroups.
+
+**Also shipped alongside this phase:** Zelle transactions are now always
+classified `regular` (`app/services/transaction_sync.py::_classify_type`),
+regardless of what Plaid's `personal_finance_category` says. Plaid tags
+Zelle the same `TRANSFER_IN`/`TRANSFER_OUT` category as an actual
+internal transfer, but in this household Zelle is only ever used to pay
+someone back or buy something secondhand -- never a transfer between the
+household's own accounts.
+
+### Design note: Shared Expenses tab (Phase 6, not yet built)
+
+Planned to sit entirely on top of Phase 5 without touching Phases 1-5's
+code: `Account.is_shared` (new column), plus a settlement service that
+sums a month's shared transactions and applies a fixed household split.
+A transaction counts toward the split when:
+
+```
+account.is_shared AND (
+    transaction_type == "regular"
+    OR (is_recurring AND recurring_rule.is_shared)
+)
+```
+
+Everything on a shared account (e.g. the joint credit card, joint
+checking) counts by default except transfers/income; a
+`RecurringRule.is_shared` rule force-includes its matches (rent,
+insurance, internet) even when Plaid would otherwise classify them as a
+transfer. `RecurringRule.is_shared` was added in this phase's migration
+specifically so Phase 6 doesn't need one of its own just for that flag.
 
 ### Every transaction always has a category ("Other")
 

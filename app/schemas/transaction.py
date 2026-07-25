@@ -49,6 +49,11 @@ class TransactionResponse(TransactionBase):
 
     id: uuid.UUID
     account_id: uuid.UUID
+    # What's shown everywhere except this response itself doesn't have a
+    # separate "detail view" -- display_name is what list/search UIs
+    # should render; `name` (from TransactionBase) stays the original
+    # synced/typed text. See the design note on app/models/transaction.py.
+    display_name: str
     is_manual: bool
     is_pending: bool
     plaid_transaction_id: Optional[str] = None
@@ -73,6 +78,7 @@ class TransactionResponse(TransactionBase):
             },
             id=transaction.id,
             account_id=transaction.account_id,
+            display_name=transaction.display_name,
             is_manual=transaction.is_manual,
             is_pending=transaction.is_pending,
             plaid_transaction_id=transaction.plaid_transaction_id,

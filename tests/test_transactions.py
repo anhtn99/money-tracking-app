@@ -165,6 +165,7 @@ def test_synced_transaction_account_is_immutable(client):
     txn = Transaction(
         account_id=account_a.id,
         name="Synced txn",
+        display_name="Synced txn",
         amount=10,
         transaction_date=datetime.date(2026, 7, 15),
         transaction_type=TransactionType.regular,
@@ -235,6 +236,63 @@ def test_amount_presentation(
     body = response.json()
     assert body["is_amount_green"] is expected_green
     assert body["indicator"] == expected_indicator
+
+
+# ── display_name / search ────────────────────────────────────────────────
+
+def test_display_name_defaults_to_name(client):
+    account_id = _create_account(client)
+    created = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Coffee", "amount": "4.50", "transaction_date": "2026-07-15",
+    }).json()
+    assert created["display_name"] == "Coffee"
+
+
+def test_updating_name_tracks_display_name_when_unlinked(client):
+    account_id = _create_account(client)
+    created = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Coffee", "amount": "4.50", "transaction_date": "2026-07-15",
+    }).json()
+
+    response = client.patch(f"/transactions/{created['id']}", json={"name": "Latte"})
+    assert response.status_code == 200
+    assert response.json()["name"] == "Latte"
+    assert response.json()["display_name"] == "Latte"
+
+
+def test_search_matches_display_name_original_name_or_category(client):
+    account_id = _create_account(client)
+    category = client.post("/categories", json={"name": "Rent/Mortgage", "color": "#4CAF50", "icon": "🏠"}).json()
+    rule = client.post("/recurring", json={
+        "name": "Chicago Rent", "icon": "🏠", "frequency": "monthly",
+        "name_match_type": "partial", "name_pattern": "GOLD PROPERTIES",
+        "amount_min": "1750.00", "amount_max": "1750.00", "expected_day_of_period": 1,
+    }).json()
+    rent = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Zelle payment to GOLD PROPERTIES LLC", "amount": "1750.00",
+        "transaction_date": "2026-07-01", "category_id": category["id"],
+    }).json()
+    assert rent["display_name"] == "Chicago Rent"  # auto-matched on create
+
+    mortgage = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Mortgage Payment Inc", "amount": "900.00",
+        "transaction_date": "2026-07-01", "category_id": category["id"],
+    }).json()
+
+    unrelated = client.post("/transactions/manual", json={
+        "account_id": account_id, "name": "Groceries", "amount": "50.00", "transaction_date": "2026-07-01",
+    }).json()
+
+    # "zelle" only matches the original name -- display_name no longer has it.
+    zelle_results = client.get("/transactions", params={"search": "zelle"}).json()
+    assert {t["id"] for t in zelle_results} == {rent["id"]}
+
+    # "rent" matches via the linked category's name, even though neither
+    # transaction's own name/display_name contains "rent".
+    rent_results = client.get("/transactions", params={"search": "rent"}).json()
+    assert {t["id"] for t in rent_results} == {rent["id"], mortgage["id"]}
+
+    assert unrelated["id"] not in {t["id"] for t in rent_results + zelle_results}
 
 
 # ── Plaid sync ────────────────────────────────────────────────────────────
@@ -416,6 +474,34 @@ def test_sync_marks_account_needs_reverification_on_plaid_error(client, monkeypa
 
     db = SessionLocal()
     assert db.get(Account, account.id).status == AccountStatus.needs_reverification
+    db.close()
+
+
+def test_sync_auto_matches_recurring_rule(client, monkeypatch, patch_secrets):
+    _create_linked_account("item-5", "plaid-acc-5", AccountType.depository, "secret-ref-5")
+    rule = client.post("/recurring", json={
+        "name": "Chicago Rent", "icon": "🏠", "frequency": "monthly",
+        "name_match_type": "partial", "name_pattern": "GOLD PROPERTIES",
+        "amount_min": "1750.00", "amount_max": "1750.00", "expected_day_of_period": 1,
+    }).json()
+
+    page = {
+        "added": [_txn("t-rent", "plaid-acc-5", "Zelle payment to GOLD PROPERTIES LLC", 1750.00, category="TRANSFER_OUT")],
+        "modified": [], "removed": [], "has_more": False, "next_cursor": "cursor-5",
+    }
+    fake_client = FakePlaidClient({None: [page]})
+    monkeypatch.setattr(transaction_sync, "get_plaid_client", lambda: fake_client)
+
+    client.post("/transactions/sync")
+
+    db = SessionLocal()
+    txn = db.query(Transaction).filter_by(plaid_transaction_id="t-rent").one()
+    assert str(txn.recurring_rule_id) == rule["id"]
+    assert txn.is_recurring is True
+    assert txn.display_name == "Chicago Rent"
+    assert txn.name == "Zelle payment to GOLD PROPERTIES LLC"
+    # Zelle fix means this is `regular`, not `transfer`, independent of matching.
+    assert txn.transaction_type == TransactionType.regular
     db.close()
 
 

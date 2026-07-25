@@ -17,11 +17,13 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.recurring import RecurringRule
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.transaction import (
     ManualTransactionCreate,
@@ -33,6 +35,7 @@ from app.schemas.transaction import (
 from app.services.transaction_sync import sync_all_accounts
 from app.services.cash_flow import get_cash_flow
 from app.services.default_category import get_default_category
+from app.services.recurring_matching import apply_recurring_match, match_transaction
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -58,6 +61,13 @@ def _get_category_or_404(category_id: uuid.UUID, db: Session) -> Category:
     return category
 
 
+def _get_recurring_rule_or_404(rule_id: uuid.UUID, db: Session) -> RecurringRule:
+    rule = db.get(RecurringRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Recurring rule not found")
+    return rule
+
+
 @router.post("/manual", response_model=TransactionResponse, status_code=201)
 def create_manual_transaction(payload: ManualTransactionCreate, db: Session = Depends(get_db)):
     _get_account_or_404(payload.account_id, db)
@@ -72,15 +82,25 @@ def create_manual_transaction(payload: ManualTransactionCreate, db: Session = De
     transaction = Transaction(
         account_id=payload.account_id,
         name=payload.name,
+        display_name=payload.name,
         amount=payload.amount,
         transaction_date=payload.transaction_date,
         transaction_type=payload.transaction_type,
         category_id=category_id,
         is_recurring=payload.is_recurring,
-        recurring_rule_id=payload.recurring_rule_id,
+        recurring_rule_id=None,
         notes=payload.notes,
         is_manual=True,
     )
+    if payload.recurring_rule_id is not None:
+        rule = _get_recurring_rule_or_404(payload.recurring_rule_id, db)
+        apply_recurring_match(transaction, rule)
+    else:
+        # No explicit rule given -- try auto-matching against existing
+        # rules by name/amount, same as a synced transaction would (see
+        # app/services/transaction_sync.py). No-op if nothing matches.
+        match_transaction(db, transaction)
+
     db.add(transaction)
     db.commit()
     db.refresh(transaction)
@@ -94,6 +114,7 @@ def list_transactions(
     transaction_type: Optional[TransactionType] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Transaction)
@@ -107,6 +128,21 @@ def list_transactions(
         query = query.filter(Transaction.transaction_date >= start_date)
     if end_date is not None:
         query = query.filter(Transaction.transaction_date <= end_date)
+    if search is not None:
+        # Matches display_name (what's shown) OR the original synced
+        # name OR the linked category's name -- so searching "zelle"
+        # still surfaces a transaction relabeled "Chicago Rent" (its
+        # original name still has it), and searching "rent" surfaces
+        # transactions filed under a Rent/Mortgage category even when
+        # neither name field contains the word.
+        pattern = f"%{search}%"
+        query = query.join(Category, Transaction.category_id == Category.id).filter(
+            or_(
+                Transaction.display_name.ilike(pattern),
+                Transaction.name.ilike(pattern),
+                Category.name.ilike(pattern),
+            )
+        )
     transactions = query.order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc()).all()
     return [TransactionResponse.from_transaction(t) for t in transactions]
 
@@ -158,6 +194,22 @@ def update_transaction(transaction_id: uuid.UUID, payload: TransactionUpdate, db
             updates["category_id"] = get_default_category(db).id
         else:
             _get_category_or_404(updates["category_id"], db)
+
+    if "recurring_rule_id" in updates:
+        if updates["recurring_rule_id"] is None:
+            # Unlinking -- fall back to the (possibly also-being-updated)
+            # original name, same as deleting the rule itself does in
+            # app/routers/recurring.py.
+            updates["is_recurring"] = False
+            updates["display_name"] = updates.get("name", transaction.name)
+        else:
+            rule = _get_recurring_rule_or_404(updates["recurring_rule_id"], db)
+            updates["is_recurring"] = True
+            updates["display_name"] = rule.name
+    elif "name" in updates and transaction.recurring_rule_id is None:
+        # No rule-driven alias in effect -- display_name just tracks the
+        # (original) name, same single-field behavior as before this split.
+        updates["display_name"] = updates["name"]
 
     for field, value in updates.items():
         setattr(transaction, field, value)

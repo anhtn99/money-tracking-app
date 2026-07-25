@@ -24,6 +24,7 @@ from app.models.account import Account, AccountStatus
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.transaction import SyncResult
 from app.services.default_category import get_default_category
+from app.services.recurring_matching import match_transaction
 
 # Plaid's personal_finance_category.primary values that represent money
 # moving between the household's own accounts rather than a real
@@ -138,9 +139,11 @@ def sync_all_accounts(db: Session) -> SyncResult:
             account = account_by_plaid_id.get(txn["account_id"])
             if account is None:
                 continue  # belongs to an account we're not tracking (e.g. removed after linking)
-            db.add(Transaction(
+            name = txn["merchant_name"] or txn["name"]
+            transaction = Transaction(
                 account_id=account.id,
-                name=txn["merchant_name"] or txn["name"],
+                name=name,
+                display_name=name,
                 amount=txn["amount"],
                 transaction_date=txn["date"],
                 transaction_type=_classify_type(txn),
@@ -148,7 +151,12 @@ def sync_all_accounts(db: Session) -> SyncResult:
                 is_manual=False,
                 is_pending=txn["pending"],
                 plaid_transaction_id=txn["transaction_id"],
-            ))
+            )
+            # Auto-link against existing RecurringRules -- overwrites
+            # display_name to the rule's name when it matches (see
+            # app/services/recurring_matching.py). No-op if nothing matches.
+            match_transaction(db, transaction)
+            db.add(transaction)
             added_count += 1
 
         for txn in modified:
@@ -163,6 +171,13 @@ def sync_all_accounts(db: Session) -> SyncResult:
             # and re-classifying it here on every pending->posted
             # correction would silently undo that override.
             existing.name = txn["merchant_name"] or txn["name"]
+            if existing.recurring_rule_id is None:
+                # No rule-driven alias in effect yet -- keep display_name
+                # tracking the refreshed name, and give matching another
+                # shot now that the text may have changed (e.g. a pending
+                # transaction posting with cleaner merchant text).
+                existing.display_name = existing.name
+                match_transaction(db, existing)
             existing.amount = txn["amount"]
             existing.transaction_date = txn["date"]
             existing.is_pending = txn["pending"]

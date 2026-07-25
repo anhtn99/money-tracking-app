@@ -33,7 +33,18 @@ class Transaction(Base):
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
     account = relationship("Account")
 
+    # `name` is the original text synced from Plaid (merchant_name/name),
+    # or whatever the user typed for a manual transaction -- set once and
+    # otherwise only ever refreshed by a Plaid "modified" event, never by
+    # the recurring-matching engine. `display_name` is what's shown
+    # everywhere else (list view, search) -- it defaults to `name` but
+    # gets overwritten to the linked RecurringRule's name once matched
+    # (app/services/recurring_matching.py), e.g. a transaction whose
+    # `name` is "Zelle payment to GOLD PROPERTIES LLC" displays as
+    # "Chicago Rent". The single-transaction detail view is the one place
+    # that still shows the original `name`.
     name = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)  # see sign convention above
     transaction_date = Column(Date, nullable=False)
     transaction_type = Column(Enum(TransactionType), nullable=False, default=TransactionType.regular)
