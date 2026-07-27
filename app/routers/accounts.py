@@ -62,6 +62,7 @@ def create_manual_account(payload: ManualAccountCreate, db: Session = Depends(ge
         account_type=payload.account_type,
         current_balance=payload.current_balance,
         is_manual=True,
+        is_shared=payload.is_shared,
         status=AccountStatus.active,
     )
     db.add(account)

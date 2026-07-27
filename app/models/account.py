@@ -42,6 +42,12 @@ class Account(Base):
     is_manual = Column(Boolean, nullable=False, default=False)
     current_balance = Column(Numeric(12, 2), nullable=True)
 
+    # Marks a joint/household account (e.g. a shared credit card, joint
+    # checking) whose transactions count toward the monthly Shared
+    # Expenses split (app/services/shared_expenses.py) -- see that
+    # module for the inclusion rule.
+    is_shared = Column(Boolean, nullable=False, default=False)
+
     # Only set for Plaid-linked accounts -- null for manual ones
     plaid_item_id = Column(String, nullable=True)
     plaid_account_id = Column(String, nullable=True, unique=True)

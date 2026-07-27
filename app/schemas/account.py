@@ -21,15 +21,20 @@ class AccountBase(BaseModel):
 
 class ManualAccountCreate(AccountBase):
     current_balance: Optional[Decimal] = None
+    is_shared: bool = False
 
 
 class AccountUpdate(BaseModel):
     """All fields optional -- callers only send what they want to change.
     Deliberately does NOT include is_manual or plaid_* fields -- those are
-    set once at creation and shouldn't be editable afterward."""
+    set once at creation and shouldn't be editable afterward. is_shared IS
+    included here since it's the main way a Plaid-linked account (created
+    via /plaid/exchange, which has no is_shared field of its own) gets
+    marked as a Shared Expenses account after the fact."""
     name: Optional[str] = None
     current_balance: Optional[Decimal] = None
     status: Optional[AccountStatus] = None
+    is_shared: Optional[bool] = None
 
 
 class AccountResponse(AccountBase):
@@ -41,6 +46,7 @@ class AccountResponse(AccountBase):
     id: uuid.UUID
     status: AccountStatus
     is_manual: bool
+    is_shared: bool
     current_balance: Optional[Decimal] = None
     created_at: datetime
     updated_at: datetime
