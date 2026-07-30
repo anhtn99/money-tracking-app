@@ -1,0 +1,57 @@
+name: Terraform apply
+
+# Manual trigger only, and targets the `infra-production` GitHub
+# Environment (Settings > Environments), which must have a required
+# reviewer configured. That's the actual approval gate -- this job
+# literally cannot obtain AWS credentials until a human clicks Approve,
+# because the terraform-apply IAM role's trust policy only accepts an
+# OIDC token whose `sub` claim names this exact environment (see
+# infra/terraform/shared/main.tf). `-auto-approve` below skips
+# Terraform's OWN interactive prompt, which is correct here -- the human
+# checkpoint already happened one step earlier, enforced by GitHub
+# rather than by Terraform (CI has no interactive terminal to prompt in
+# the first place).
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to apply"
+        required: true
+        type: choice
+        options:
+          - free-tier
+        # Add full-textbook here once that environment's Terraform exists.
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  TF_VERSION: "1.5.7"
+  TF_VAR_plaid_client_id: ${{ secrets.PLAID_CLIENT_ID }}
+  TF_VAR_plaid_secret: ${{ secrets.PLAID_SECRET }}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: infra-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        working-directory: infra/terraform/environments/${{ inputs.environment }}
+        run: terraform init
+
+      - name: terraform apply
+        working-directory: infra/terraform/environments/${{ inputs.environment }}
+        run: terraform apply -input=false -auto-approve

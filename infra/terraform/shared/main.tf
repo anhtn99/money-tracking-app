@@ -91,6 +91,163 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
 }
 
+data "aws_caller_identity" "current" {}
+
+# --- Terraform CI/CD (infra changes, as opposed to app deploys) -----------
+#
+# Deliberately two separate roles with very different trust conditions,
+# not one role reused for both:
+#
+# - terraform-plan is read-only (AWS managed ReadOnlyAccess) and trusted
+#   from ANY pull request touching infra/terraform/** -- safe to trust
+#   broadly because the permissions themselves can't mutate anything,
+#   regardless of which branch opened the PR.
+# - terraform-apply can actually create/modify/destroy real
+#   infrastructure, so its trust condition is anchored to a GitHub
+#   *environment* name (`infra-production`, configured in the GitHub UI
+#   with a required reviewer), not a branch. GitHub only mints an OIDC
+#   token with that `environment:` sub claim once a job has passed that
+#   environment's protection rules -- i.e. once a human has clicked
+#   Approve. This is the same "stop and confirm before apply" guarantee
+#   this whole phase has followed by hand, enforced by GitHub itself
+#   instead of by a person watching chat.
+#
+# Both live here (not per-environment, unlike the app-deploy role) because
+# apply's permissions can't be scoped to specific resource ARNs the way
+# the free-tier deploy role's SSM permissions were -- Terraform is what
+# CREATES those resources, so their IDs don't exist yet at the point
+# permissions have to be defined. One shared pair of roles, reused for
+# whichever environment directory a given plan/apply run targets.
+
+data "aws_iam_policy_document" "terraform_plan_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # pull_request-triggered jobs get this fixed sub claim regardless of
+    # the PR's source branch -- intentional, a plan needs to run on every
+    # PR, not just ones opened from main.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:anhtn99/money-tracking-app:pull_request"]
+    }
+  }
+}
+
+resource "aws_iam_role" "terraform_plan" {
+  name               = "money-tracking-app-terraform-plan"
+  assume_role_policy = data.aws_iam_policy_document.terraform_plan_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "terraform_plan_readonly" {
+  role       = aws_iam_role.terraform_plan.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+data "aws_iam_policy_document" "terraform_apply_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github_actions.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:anhtn99/money-tracking-app:environment:infra-production"]
+    }
+  }
+}
+
+resource "aws_iam_role" "terraform_apply" {
+  name               = "money-tracking-app-terraform-apply"
+  assume_role_policy = data.aws_iam_policy_document.terraform_apply_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "terraform_apply_poweruser" {
+  role       = aws_iam_role.terraform_apply.name
+  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+}
+
+# PowerUserAccess deliberately excludes ALL of IAM (via a NotAction, not a
+# Deny -- so this supplemental policy layers on top correctly) specifically
+# to stop a broadly-permissioned pipeline role from being able to grant
+# itself more access than it started with. This project's Terraform does
+# need to manage a handful of IAM resources though (the EC2 instance role,
+# this role's sibling deploy role, etc.), so this grants exactly those
+# actions -- restricted to resources whose name already carries this
+# project's "money-tracking-app-" prefix. It cannot touch any IAM
+# role/policy/instance-profile belonging to anything else in the account.
+data "aws_iam_policy_document" "terraform_apply_iam_scoped" {
+  statement {
+    sid    = "ManageProjectIamRoles"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:DeleteRole",
+      "iam:GetRole",
+      "iam:TagRole",
+      "iam:UpdateRole",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:PutRolePolicy",
+      "iam:GetRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:ListRolePolicies",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:PassRole",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/money-tracking-app-*",
+    ]
+  }
+
+  statement {
+    sid    = "ManageProjectInstanceProfiles"
+    effect = "Allow"
+    actions = [
+      "iam:CreateInstanceProfile",
+      "iam:DeleteInstanceProfile",
+      "iam:GetInstanceProfile",
+      "iam:AddRoleToInstanceProfile",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:TagInstanceProfile",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:instance-profile/money-tracking-app-*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_apply_iam_scoped" {
+  name   = "money-tracking-app-terraform-apply-iam-scoped"
+  role   = aws_iam_role.terraform_apply.id
+  policy = data.aws_iam_policy_document.terraform_apply_iam_scoped.json
+}
+
 # --- Cost safety net --------------------------------------------------------
 
 # Account-wide, not per-environment, since it's meant to catch total
@@ -154,4 +311,14 @@ output "ecr_repository_name" {
 
 output "github_oidc_provider_arn" {
   value = aws_iam_openid_connect_provider.github_actions.arn
+}
+
+output "terraform_plan_role_arn" {
+  value       = aws_iam_role.terraform_plan.arn
+  description = "Paste into the GitHub repo's Actions > Variables as TERRAFORM_PLAN_ROLE_ARN"
+}
+
+output "terraform_apply_role_arn" {
+  value       = aws_iam_role.terraform_apply.arn
+  description = "Paste into the GitHub repo's Actions > Variables as TERRAFORM_APPLY_ROLE_ARN"
 }

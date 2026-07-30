@@ -20,6 +20,14 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Scopes FREE_TIER_DEPLOY_ROLE_ARN/FREE_TIER_INSTANCE_ID below to this
+    # named GitHub Environment's own Variables, instead of repo-wide ones
+    # -- keeps this workflow's config isolated from full-textbook's once
+    # that environment exists, and gives this target its own deploy
+    # history view. No protection rules on this environment (unlike
+    # infra-production) -- deploying already-reviewed app code stays a
+    # single manual click, no separate approval step.
+    environment: free-tier
     steps:
       - uses: actions/checkout@v4
 
