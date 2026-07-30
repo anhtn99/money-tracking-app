@@ -1,0 +1,40 @@
+﻿# Runs on the free-tier EC2 instance (infra/terraform/modules/ec2-app).
+# Deliberately different from docker-compose.yml, not an override of it --
+# no `db` service (Postgres is a real RDS instance, not a container here),
+# no bind-mounted source/--reload (a built image, not live local dev),
+# and an added `caddy` service doing automatic HTTPS reverse-proxying to
+# `app`, which is why only Caddy's ports are published to the host.
+services:
+  app:
+    image: ${ECR_IMAGE}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      ENVIRONMENT: production
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID}
+      PLAID_SECRET: ${PLAID_SECRET}
+      PLAID_ENV: ${PLAID_ENV:-production}
+      AWS_DEFAULT_REGION: us-east-2
+    # No AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY here -- the EC2 instance's
+    # own IAM role supplies credentials via boto3's default credential
+    # chain (see app/core/secrets.py's docstring), the same way ECS's
+    # task role does for the full-textbook environment.
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"   # required open to 0.0.0.0/0 for Let's Encrypt's HTTP-01 challenge -- validators connect from arbitrary IPs
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data     # persists the issued cert across container restarts
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

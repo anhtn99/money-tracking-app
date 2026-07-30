@@ -35,7 +35,15 @@ if settings.database_url.startswith("sqlite"):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 else:
-    engine = create_engine(settings.database_url)
+    # pool_pre_ping issues a cheap SELECT 1 before handing out a pooled
+    # connection, transparently discarding+replacing it if the check
+    # fails -- matters once the app is a long-running process talking to
+    # a database over a real network hop (RDS/Aurora) instead of the same
+    # Docker network. Without it, a connection dropped silently (an RDS
+    # failover, an idle timeout, an Aurora Serverless v2 scaling event)
+    # surfaces as a confusing mid-request error instead of the pool just
+    # quietly getting a fresh connection.
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

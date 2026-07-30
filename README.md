@@ -28,7 +28,7 @@ ECS Fargate + Aurora Serverless v2.
 
 A few deliberate design choices worth knowing about:
 - **Plaid access tokens are never stored directly** -- `Account.plaid_access_token_ref`
-  holds a reference (e.g. a Secrets Manager ARN), not the token itself.
+  holds a reference (an AWS SSM Parameter Store parameter name), not the token itself.
 - **Transaction amount sign** follows Plaid's own convention (positive =
   money out) for consistency with the existing sync pipelines.
 - **The "show this amount in green" rule** from the spec is presentation
@@ -81,7 +81,7 @@ the manual account CRUD endpoints.
 
 **What needs more setup to test**: the Plaid endpoints need
 `PLAID_CLIENT_ID`/`PLAID_SECRET`/`PLAID_ENV` in your `.env` (same values
-as your other Plaid projects), and the Secrets Manager calls need AWS
+as your other Plaid projects), and the SSM Parameter Store calls need AWS
 credentials available to the container (docker-compose passes through
 your local `AWS_*` env vars automatically -- make sure you're logged in
 locally, e.g. `aws sso login`, before starting the container).

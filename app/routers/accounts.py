@@ -120,7 +120,7 @@ def create_link_token():
 @router.post("/plaid/exchange", response_model=list[AccountResponse], status_code=201)
 def exchange_public_token(payload: PlaidExchangeRequest, db: Session = Depends(get_db)):
     """Exchanges a public_token (from completing Plaid Link) for a real
-    access_token, stores it in Secrets Manager, fetches the linked
+    access_token, stores it in SSM Parameter Store, fetches the linked
     account(s) from Plaid, and creates an Account row for each -- a
     single Plaid Item can represent multiple accounts (e.g. checking +
     savings at the same bank)."""

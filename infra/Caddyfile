@@ -1,0 +1,9 @@
+# Caddy gets automatic HTTPS for free (issues + renews a Let's Encrypt
+# cert on its own, no ACM/ALB needed) as soon as it's given a real
+# domain name -- this is the entire reason the free-tier environment can
+# skip an Application Load Balancer's ~$16-20/mo cost and still serve
+# real TLS. {$APP_DOMAIN} is Caddy's native env-var substitution syntax,
+# set via docker-compose.prod.yml -- no separate templating step needed.
+{$APP_DOMAIN} {
+	reverse_proxy app:8000
+}

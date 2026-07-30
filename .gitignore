@@ -24,3 +24,15 @@ env/
 
 # Claude Context
 claude-context/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+# .terraform.lock.hcl is deliberately NOT ignored -- it pins exact
+# provider versions/checksums and should be committed, same reasoning as
+# a package-lock.json.

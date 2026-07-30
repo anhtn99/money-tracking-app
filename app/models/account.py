@@ -4,9 +4,9 @@ Accounts tab data model.
 Design note on Plaid credentials: the raw access_token is deliberately
 NOT stored in this table. Storing bank credentials directly in an
 application database is bad practice even for a personal project --
-plaid_access_token_ref holds a reference (e.g. an AWS Secrets Manager
-secret ARN) instead, and the actual token lookup happens through that
-secrets store at sync time.
+plaid_access_token_ref holds a reference (an AWS SSM Parameter Store
+parameter name, see app/core/secrets.py) instead, and the actual token
+lookup happens through that store at sync time.
 """
 import enum
 import uuid
@@ -51,7 +51,7 @@ class Account(Base):
     # Only set for Plaid-linked accounts -- null for manual ones
     plaid_item_id = Column(String, nullable=True)
     plaid_account_id = Column(String, nullable=True, unique=True)
-    plaid_access_token_ref = Column(String, nullable=True)  # secrets manager ARN, not the token itself
+    plaid_access_token_ref = Column(String, nullable=True)  # SSM parameter name, not the token itself
 
     # transactions/sync cursor (see app/services/transaction_sync.py). A
     # single Plaid Item (access token) can back multiple Account rows
