@@ -1,0 +1,40 @@
+name: Deploy free-tier
+
+# Manual trigger only -- deliberately not `on: push`. This is a personal
+# project's real, daily-use environment; auto-deploy-on-push is a
+# reasonable future step once a few manual runs have been watched
+# succeed, not the safe starting point.
+on:
+  workflow_dispatch: {}
+
+# id-token: write is what lets this job request an OIDC token from GitHub
+# and exchange it for temporary AWS credentials -- no long-lived AWS
+# access keys stored as a GitHub secret anywhere.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.FREE_TIER_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Same script used for manual/local deploys -- CI just supplies
+      # INSTANCE_ID (a plain repo Variable, set once after `terraform
+      # apply`) instead of the script's local fallback of asking
+      # Terraform directly, which would otherwise require granting this
+      # role read access to the Terraform state bucket.
+      - name: Deploy
+        env:
+          INSTANCE_ID: ${{ vars.FREE_TIER_INSTANCE_ID }}
+        run: ./infra/scripts/deploy-free-tier.sh

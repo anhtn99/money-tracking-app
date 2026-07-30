@@ -14,3 +14,8 @@ output "app_domain" {
 output "rds_endpoint" {
   value = module.rds.endpoint
 }
+
+output "github_actions_deploy_role_arn" {
+  value       = aws_iam_role.github_actions_deploy.arn
+  description = "Paste into the GitHub repo's Actions > Variables as FREE_TIER_DEPLOY_ROLE_ARN"
+}

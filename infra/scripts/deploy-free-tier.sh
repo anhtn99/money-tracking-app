@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Manual deploy for the free-tier environment. Does the same thing the
-# GitHub Actions workflow (.github/workflows/deploy-free-tier.yml) does,
-# just run by hand from your own machine instead of CI. Requires local
-# AWS credentials with permission to push to ECR and call
-# ssm:SendCommand/GetCommandInvocation on the free-tier instance.
+# Deploy for the free-tier environment -- run by hand from your own
+# machine, or by .github/workflows/deploy-free-tier.yml in CI. Requires
+# AWS credentials (local profile, or the CI role assumed via OIDC) with
+# permission to push to ECR and call ssm:SendCommand/GetCommandInvocation
+# on the free-tier instance.
 set -euo pipefail
 
 AWS_REGION="us-east-2"
@@ -19,11 +19,16 @@ aws ecr get-login-password --region "$AWS_REGION" \
 # --platform linux/amd64 -- the EC2 instance is x86_64 (t3.micro), but a
 # build machine with Apple Silicon defaults to arm64 -- without this the
 # pushed image would fail to run on the instance at all ("exec format
-# error"). Harmless/no-op on an x86_64 build machine.
+# error"). Harmless/no-op on an x86_64 build machine (including GitHub's
+# own ubuntu-latest runners, which are already x86_64).
 docker build --platform linux/amd64 -t "$ECR_IMAGE" .
 docker push "$ECR_IMAGE"
 
-INSTANCE_ID=$(terraform -chdir=infra/terraform/environments/free-tier output -raw instance_id)
+# CI sets INSTANCE_ID directly (a GitHub Actions repo Variable) so the
+# deploy role never needs Terraform state read access just to look this
+# up. Local runs have no INSTANCE_ID set, so this falls back to asking
+# Terraform, same as before.
+INSTANCE_ID="${INSTANCE_ID:-$(terraform -chdir=infra/terraform/environments/free-tier output -raw instance_id)}"
 
 echo "==> Fetching app config from SSM and deploying on $INSTANCE_ID"
 # Everything after `echo "Deploying..."` runs ON the instance via SSM Run
