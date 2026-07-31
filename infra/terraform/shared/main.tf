@@ -184,6 +184,35 @@ resource "aws_iam_role_policy" "terraform_plan_state_lock" {
   policy = data.aws_iam_policy_document.terraform_plan_state_lock.json
 }
 
+# free-tier's main.tf reads the actual RDS master password (via
+# manage_master_user_password's AWS-managed Secrets Manager secret) to
+# compose DATABASE_URL for the SSM secrets module -- `terraform plan`
+# needs the real value to know whether that derived SSM parameter would
+# change, so this is a genuine exception to "read-only", not operational
+# plumbing like the state lock above.
+#
+# Scoped to the `rds!` name prefix specifically, not this one secret's
+# exact ARN or a blanket `secret:*` -- AWS reserves that literal prefix
+# for secrets it creates itself via manage_master_user_password, a
+# regular IAM principal can't create a secret matching that name. Covers
+# full-textbook's future Aurora-managed secret too, and avoids reaching
+# across into free-tier's separate state from here (shared is applied
+# before either environment exists, so it can't depend on their outputs).
+data "aws_iam_policy_document" "terraform_plan_rds_secret" {
+  statement {
+    sid       = "ReadRdsManagedSecret"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:us-east-2:${data.aws_caller_identity.current.account_id}:secret:rds!*"]
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_plan_rds_secret" {
+  name   = "money-tracking-app-terraform-plan-rds-secret"
+  role   = aws_iam_role.terraform_plan.id
+  policy = data.aws_iam_policy_document.terraform_plan_rds_secret.json
+}
+
 data "aws_iam_policy_document" "terraform_apply_assume" {
   statement {
     effect  = "Allow"
