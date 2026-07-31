@@ -164,6 +164,26 @@ resource "aws_iam_role_policy_attachment" "terraform_plan_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
+# `terraform plan` doesn't change any AWS resource, but it still has to
+# acquire this backend's DynamoDB state lock to safely read state --
+# ReadOnlyAccess correctly excludes DynamoDB writes (it's genuinely
+# read-only), so this is a narrow, explicit exception for exactly the
+# lock table, not a general DynamoDB write grant.
+data "aws_iam_policy_document" "terraform_plan_state_lock" {
+  statement {
+    sid       = "TerraformStateLock"
+    effect    = "Allow"
+    actions   = ["dynamodb:PutItem", "dynamodb:DeleteItem"]
+    resources = ["arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/terraform-state-lock"]
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_plan_state_lock" {
+  name   = "money-tracking-app-terraform-plan-state-lock"
+  role   = aws_iam_role.terraform_plan.id
+  policy = data.aws_iam_policy_document.terraform_plan_state_lock.json
+}
+
 data "aws_iam_policy_document" "terraform_apply_assume" {
   statement {
     effect  = "Allow"
