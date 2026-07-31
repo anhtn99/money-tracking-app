@@ -33,10 +33,16 @@ data "aws_iam_policy_document" "github_actions_assume" {
     # "repo:anhtn99/money-tracking-app:*" trust. workflow_dispatch runs
     # carry the ref of whichever branch was selected when triggering, so
     # this also means "deploy" can only ever be manually run against main.
+    #
+    # Uses GitHub's "immutable ID" subject format (owner@owner_id and
+    # repo@repo_id) -- confirmed by decoding a real token from this
+    # repo's Actions runs; the plain name-slug format doesn't match what
+    # GitHub actually issues for this account/repo. See the matching
+    # comment in infra/terraform/shared/main.tf for the full story.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:anhtn99/money-tracking-app:ref:refs/heads/main"]
+      values   = ["repo:anhtn99@306890925/money-tracking-app@1306216379:ref:refs/heads/main"]
     }
   }
 }

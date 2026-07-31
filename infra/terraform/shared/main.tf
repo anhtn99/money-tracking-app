@@ -138,10 +138,18 @@ data "aws_iam_policy_document" "terraform_plan_assume" {
     # pull_request-triggered jobs get this fixed sub claim regardless of
     # the PR's source branch -- intentional, a plan needs to run on every
     # PR, not just ones opened from main.
+    #
+    # Uses GitHub's "immutable ID" subject format (owner@owner_id and
+    # repo@repo_id, not the plain name slug) -- confirmed by decoding an
+    # actual token from this repo's own Actions runs. GitHub embeds the
+    # account's/repo's stable numeric IDs specifically so a rename (this
+    # repo WAS briefly renamed to shared-expenses-sheet and back) can't
+    # leave a stale trust policy matching whatever repo/account picks up
+    # the old name later. owner_id 306890925, repo_id 1306216379.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:anhtn99/money-tracking-app:pull_request"]
+      values   = ["repo:anhtn99@306890925/money-tracking-app@1306216379:pull_request"]
     }
   }
 }
@@ -172,10 +180,13 @@ data "aws_iam_policy_document" "terraform_apply_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # See the matching comment on terraform_plan_assume above -- same
+    # immutable-ID subject format, confirmed against a real token from
+    # this repo.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:anhtn99/money-tracking-app:environment:infra-production"]
+      values   = ["repo:anhtn99@306890925/money-tracking-app@1306216379:environment:infra-production"]
     }
   }
 }
